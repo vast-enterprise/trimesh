@@ -1,15 +1,14 @@
-[![trimesh](https://trimsh.org/images/logotype-a.svg)](http://trimsh.org)
+[![trimesh](https://trimesh.org/_static/images/logotype-a.svg)](http://trimesh.org)
 
 -----------
-[![Github Actions](https://github.com/mikedh/trimesh/workflows/Release%20Trimesh/badge.svg)](https://github.com/mikedh/trimesh/actions)  [![PyPI version](https://badge.fury.io/py/trimesh.svg)](https://badge.fury.io/py/trimesh) [![codecov](https://codecov.io/gh/mikedh/trimesh/branch/main/graph/badge.svg?token=4PVRQXyl2h)](https://codecov.io/gh/mikedh/trimesh)  [![Docker Image Version (latest by date)](https://img.shields.io/docker/v/trimesh/trimesh?label=docker&sort=semver)](https://hub.docker.com/r/trimesh/trimesh/tags)
+[![Github Actions](https://github.com/mikedh/trimesh/workflows/Release%20Trimesh/badge.svg)](https://github.com/mikedh/trimesh/actions) [![codecov](https://codecov.io/gh/mikedh/trimesh/branch/main/graph/badge.svg?token=4PVRQXyl2h)](https://codecov.io/gh/mikedh/trimesh)  [![Docker Image Version (latest by date)](https://img.shields.io/docker/v/trimesh/trimesh?label=docker&sort=semver)](https://hub.docker.com/r/trimesh/trimesh/tags) [![PyPI version](https://badge.fury.io/py/trimesh.svg)](https://badge.fury.io/py/trimesh)
 
 
-
-Trimesh is a pure Python (2.7-3.5+) library for loading and using [triangular meshes](https://en.wikipedia.org/wiki/Triangle_mesh) with an emphasis on watertight surfaces. The goal of the library is to provide a full featured and well tested Trimesh object which allows for easy manipulation and analysis, in the style of the Polygon object in the [Shapely library](https://github.com/Toblerity/Shapely).
+Trimesh is a pure Python 3.7+ library for loading and using [triangular meshes](https://en.wikipedia.org/wiki/Triangle_mesh) with an emphasis on watertight surfaces. The goal of the library is to provide a full featured and well tested Trimesh object which allows for easy manipulation and analysis, in the style of the Polygon object in the [Shapely library](https://github.com/Toblerity/Shapely).
 
 The API is mostly stable, but this should not be relied on and is not guaranteed: install a specific version if you plan on deploying something using trimesh.
 
-Pull requests are appreciated and responded to promptly! If you'd like to contribute, here is an [up to date list of potential enhancements](https://github.com/mikedh/trimesh/issues/1557) although things not on that list are also welcome. Here's a quick [development and contributing guide.](https://trimsh.org/contributing.html)
+Pull requests are appreciated and responded to promptly! If you'd like to contribute, here is an [up to date list of potential enhancements](https://github.com/mikedh/trimesh/issues/1557) although things not on that list are also welcome. Here's a quick [development and contributing guide.](https://trimesh.org/contributing.html)
 
 
 ## Basic Installation
@@ -20,17 +19,17 @@ Keeping `trimesh` easy to install is a core goal, thus the *only* hard dependenc
 pip install trimesh
 ```
 
-The minimal install can load many supported formats (STL, PLY, GLTF/GLB) into numpy arrays. More functionality is available when soft dependencies are installed. This includes things like convex hulls (`scipy`), graph operations (`networkx`), faster ray queries (`pyembree`), vector path handling (`shapely` and `rtree`), XML formats like 3DXML/XAML/3MF (`lxml`), preview windows (`pyglet`), faster cache checks (`xxhash`), etc. To install `trimesh` with the soft dependencies that generally install cleanly on Linux, OSX, and Windows using `pip`:
+The minimal install can load many supported formats (STL, PLY, GLTF/GLB) into numpy arrays. More functionality is available when soft dependencies are installed. This includes things like convex hulls (`scipy`), graph operations (`networkx`), faster ray queries (`embreex`), vector path handling (`shapely` and `rtree`), XML formats like 3DXML/XAML/3MF (`lxml`), preview windows (`pyglet`), faster cache checks (`xxhash`), etc. To install `trimesh` with the soft dependencies that generally install cleanly on Linux, OSX, and Windows using `pip`:
 ```bash
 pip install trimesh[easy]
 ```
 
-Further information is available in the [advanced installation documentation](https://trimsh.org/install.html).
+Further information is available in the [advanced installation documentation](https://trimesh.org/install.html).
 
 ## Quick Start
 
 Here is an example of loading a mesh from file and colorizing its faces. Here is a nicely formatted
-[ipython notebook version](https://trimsh.org/examples/quick_start.html) of this example. Also check out the [cross section example](https://trimsh.org/examples/section.html).
+[ipython notebook version](https://trimesh.org/quick_start.html) of this example. Also check out the [cross section example](https://trimesh.org/section.html).
 
 ```python
 import numpy as np
@@ -145,7 +144,7 @@ print(mesh.bounding_box_oriented.volume,
 * Determine if a mesh is watertight, convex, etc.
 * Uniformly sample the surface of a mesh
 * Ray-mesh queries including location, triangle index, etc.
-* Boolean operations on meshes (intersection, union, difference) using OpenSCAD or Blender as a back end. Note that mesh booleans in general are usually slow and unreliable
+* Boolean operations on meshes (intersection, union, difference) using Manifold3D or Blender Note that mesh booleans in general are usually slow and unreliable
 * Voxelize watertight meshes
 * Volume mesh generation (TETgen) using Gmsh SDK
 * Smooth watertight meshes using laplacian smoothing algorithms (Classic, Taubin, Humphrey)
@@ -208,7 +207,7 @@ A question that comes up pretty frequently is [how to cite the library.](https:/
 @software{trimesh,
 	author = {{Dawson-Haggerty et al.}},
 	title = {trimesh},
-	url = {https://trimsh.org/},
+	url = {https://trimesh.org/},
 	version = {3.2.0},
 	date = {2019-12-8},
 }

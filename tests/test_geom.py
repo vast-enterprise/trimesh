@@ -1,6 +1,7 @@
 """
 Load all the meshes we can get our hands on and check things, stuff.
 """
+
 try:
     from . import generic as g
 except BaseException:
@@ -8,9 +9,9 @@ except BaseException:
 
 
 class GeomTests(g.unittest.TestCase):
-
     def test_triangulate(self):
         from trimesh.geometry import triangulate_quads as tq
+
         # create some triangles and quads
         tri = (g.random((100, 3)) * 100).astype(g.np.int64)
         quad = (g.random((100, 4)) * 100).astype(g.np.int64)
@@ -33,6 +34,6 @@ class GeomTests(g.unittest.TestCase):
         assert len(tq([])) == 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     g.trimesh.util.attach_to_log()
     g.unittest.main()

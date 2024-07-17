@@ -4,6 +4,7 @@ schemas.py
 
 Tools for dealing with schemas, particularly JSONschema
 """
+
 import json
 
 from .util import decode_text
@@ -31,10 +32,10 @@ def resolve(item, resolver):
         # run the resolver on every list item
         return [resolve(i, resolver) for i in item]
     elif isinstance(item, dict):
-        if '$ref' in item:
+        if "$ref" in item:
             # if we have a reference to a file pop the key
             # and update the dict with the reference in-place
-            raw = decode_text(resolver.get(item.pop('$ref')))
+            raw = decode_text(resolver.get(item.pop("$ref")))
             item.update(json.loads(raw))
             # run the resolver on the dict again
             resolve(item, resolver)

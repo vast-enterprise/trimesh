@@ -1,10 +1,9 @@
 import numpy as np
 
-from ... import util
-from ... import graph
-from ... import grouping
-
-from ..entities import Line, Arc
+from ... import graph, grouping, util
+from ...constants import tol_path
+from ...typed import ArrayLike, Dict
+from ..entities import Arc, Line
 
 
 def dict_to_path(as_dict):
@@ -25,14 +24,15 @@ def dict_to_path(as_dict):
     # start kwargs with initial value
     result = as_dict.copy()
     # map of constructors
-    loaders = {'Arc': Arc, 'Line': Line}
+    loaders = {"Arc": Arc, "Line": Line}
     # pre- allocate entity array
-    entities = [None] * len(as_dict['entities'])
+    entities = [None] * len(as_dict["entities"])
     # run constructor for dict kwargs
-    for entity_index, entity in enumerate(as_dict['entities']):
-        entities[entity_index] = loaders[entity['type']](
-            points=entity['points'], closed=entity['closed'])
-    result['entities'] = entities
+    for entity_index, entity in enumerate(as_dict["entities"]):
+        entities[entity_index] = loaders[entity["type"]](
+            points=entity["points"], closed=entity["closed"]
+        )
+    result["entities"] = entities
 
     return result
 
@@ -56,8 +56,7 @@ def lines_to_path(lines):
     if util.is_shape(lines, (-1, (2, 3))):
         # the case where we have a list of points
         # we are going to assume they are connected
-        result = {'entities': np.array([Line(np.arange(len(lines)))]),
-                  'vertices': lines}
+        result = {"entities": np.array([Line(np.arange(len(lines)))]), "vertices": lines}
         return result
     elif util.is_shape(lines, (-1, 2, (2, 3))):
         # case where we have line segments in 2D or 3D
@@ -65,14 +64,13 @@ def lines_to_path(lines):
         # convert lines to even number of (n, dimension) points
         lines = lines.reshape((-1, dimension))
         # merge duplicate vertices
-        unique, inverse = grouping.unique_rows(lines)
+        unique, inverse = grouping.unique_rows(lines, digits=tol_path.merge_digits)
         # use scipy edges_to_path to skip creating
         # a bajillion individual line entities which
         # will be super slow vs. fewer polyline entities
-        return edges_to_path(edges=inverse.reshape((-1, 2)),
-                             vertices=lines[unique])
+        return edges_to_path(edges=inverse.reshape((-1, 2)), vertices=lines[unique])
     else:
-        raise ValueError('Lines must be (n,(2|3)) or (n,2,(2|3))')
+        raise ValueError("Lines must be (n,(2|3)) or (n,2,(2|3))")
     return result
 
 
@@ -95,22 +93,24 @@ def polygon_to_path(polygon):
     # start vertices
     vertices = []
 
-    if hasattr(polygon.boundary, 'geoms'):
+    if hasattr(polygon.boundary, "geoms"):
         boundaries = polygon.boundary.geoms
     else:
         boundaries = [polygon.boundary]
 
     # append interiors as single Line objects
+    current = 0
     for boundary in boundaries:
-        entities.append(Line(np.arange(len(boundary.coords)) +
-                             len(vertices)))
+        entities.append(Line(np.arange(len(boundary.coords)) + current))
+        current += len(boundary.coords)
         # append the new vertex array
-        vertices.extend(boundary.coords)
+        vertices.append(np.array(boundary.coords))
 
     # make sure result arrays are numpy
-    kwargs = {'entities': entities,
-              'vertices': np.array(vertices)}
-
+    kwargs = {
+        "entities": entities,
+        "vertices": np.vstack(vertices) if len(vertices) > 0 else vertices,
+    }
     return kwargs
 
 
@@ -137,16 +137,14 @@ def linestrings_to_path(multi):
 
     for line in multi:
         # only append geometry with points
-        if hasattr(line, 'coords'):
+        if hasattr(line, "coords"):
             coords = np.array(line.coords)
             if len(coords) < 2:
                 continue
-            entities.append(Line(np.arange(len(coords)) +
-                                 len(vertices)))
+            entities.append(Line(np.arange(len(coords)) + len(vertices)))
             vertices.extend(coords)
 
-    kwargs = {'entities': np.array(entities),
-              'vertices': np.array(vertices)}
+    kwargs = {"entities": np.array(entities), "vertices": np.array(vertices)}
     return kwargs
 
 
@@ -171,21 +169,16 @@ def faces_to_path(mesh, face_ids=None, **kwargs):
         edges = mesh.edges_sorted
     else:
         # take advantage of edge ordering to index as single row
-        edges = mesh.edges_sorted.reshape(
-            (-1, 6))[face_ids].reshape((-1, 2))
+        edges = mesh.edges_sorted.reshape((-1, 6))[face_ids].reshape((-1, 2))
     # an edge which occurs onely once is on the boundary
-    unique_edges = grouping.group_rows(
-        edges, require_count=1)
+    unique_edges = grouping.group_rows(edges, require_count=1)
     # add edges and vertices to kwargs
-    kwargs.update(edges_to_path(edges=edges[unique_edges],
-                                vertices=mesh.vertices))
+    kwargs.update(edges_to_path(edges=edges[unique_edges], vertices=mesh.vertices))
 
     return kwargs
 
 
-def edges_to_path(edges,
-                  vertices,
-                  **kwargs):
+def edges_to_path(edges: ArrayLike, vertices: ArrayLike, **kwargs) -> Dict:
     """
     Given an edge list of indices and associated vertices
     representing lines, generate kwargs for a Path object.
@@ -203,7 +196,7 @@ def edges_to_path(edges,
       Kwargs for Path constructor
     """
     # sequence of ordered traversals
-    dfs = graph.traversals(edges, mode='dfs')
+    dfs = graph.traversals(edges, mode="dfs")
     # make sure every consecutive index in DFS
     # traversal is an edge in the source edge list
     dfs_connected = graph.fill_traversals(dfs, edges=edges)
@@ -211,7 +204,5 @@ def edges_to_path(edges,
     # turn traversals into Line objects
     lines = [Line(d) for d in dfs_connected]
 
-    kwargs.update({'entities': lines,
-                   'vertices': vertices,
-                   'process': False})
+    kwargs.update({"entities": lines, "vertices": vertices, "process": False})
     return kwargs

@@ -4,13 +4,16 @@ triangles.py
 
 Functions for dealing with triangle soups in (n, 3, 3) float form.
 """
+
+from dataclasses import dataclass
+
 import numpy as np
 
 from . import util
-
-from .util import unitize, diagonal_dot
-from .points import point_plane_distance
 from .constants import tol
+from .points import point_plane_distance
+from .typed import NDArray, Optional, float64
+from .util import diagonal_dot, unitize
 
 
 def cross(triangles):
@@ -29,6 +32,7 @@ def cross(triangles):
     """
     vectors = np.diff(triangles, axis=1)
     crosses = np.cross(vectors[:, 0], vectors[:, 1])
+
     return crosses
 
 
@@ -52,7 +56,7 @@ def area(triangles=None, crosses=None, sum=False):
     """
     if crosses is None:
         crosses = cross(triangles)
-    areas = np.sqrt((crosses ** 2).sum(axis=1)) / 2.0
+    areas = np.sqrt((crosses**2).sum(axis=1)) / 2.0
     if sum:
         return areas.sum()
     return areas
@@ -137,13 +141,15 @@ def all_coplanar(triangles):
     """
     triangles = np.asanyarray(triangles, dtype=np.float64)
     if not util.is_shape(triangles, (-1, 3, 3)):
-        raise ValueError('Triangles must be (n, 3, 3)!')
+        raise ValueError("Triangles must be (n, 3, 3)!")
 
     test_normal = normals(triangles)[0]
     test_vertex = triangles[0][0]
-    distances = point_plane_distance(points=triangles[1:].reshape((-1, 3)),
-                                     plane_normal=test_normal,
-                                     plane_origin=test_vertex)
+    distances = point_plane_distance(
+        points=triangles[1:].reshape((-1, 3)),
+        plane_normal=test_normal,
+        plane_origin=test_vertex,
+    )
     all_coplanar = np.all(np.abs(distances) < tol.zero)
     return all_coplanar
 
@@ -156,23 +162,45 @@ def any_coplanar(triangles):
     """
     triangles = np.asanyarray(triangles, dtype=np.float64)
     if not util.is_shape(triangles, (-1, 3, 3)):
-        raise ValueError('Triangles must be (n, 3, 3)!')
+        raise ValueError("Triangles must be (n, 3, 3)!")
 
     test_normal = normals(triangles)[0]
     test_vertex = triangles[0][0]
-    distances = point_plane_distance(points=triangles[1:].reshape((-1, 3)),
-                                     plane_normal=test_normal,
-                                     plane_origin=test_vertex)
-    any_coplanar = np.any(
-        np.all(np.abs(distances.reshape((-1, 3)) < tol.zero), axis=1))
+    distances = point_plane_distance(
+        points=triangles[1:].reshape((-1, 3)),
+        plane_normal=test_normal,
+        plane_origin=test_vertex,
+    )
+    any_coplanar = np.any(np.all(np.abs(distances.reshape((-1, 3)) < tol.zero), axis=1))
     return any_coplanar
 
 
-def mass_properties(triangles,
-                    crosses=None,
-                    density=1.0,
-                    center_mass=None,
-                    skip_inertia=False):
+@dataclass
+class MassProperties:
+    # the density value these mass properties were calculated with
+    # this alters `mass` and `inertia`
+    density: float
+
+    # the volume multiplied by the density
+    mass: float
+
+    # the volume produced
+    volume: float
+
+    # the (3,) center of mass
+    center_mass: NDArray[float64]
+
+    # the (3, 3) inertia tensor
+    inertia: Optional[NDArray[float64]] = None
+
+    def __getitem__(self, item):
+        # add for backwards compatibility
+        return getattr(self, item)
+
+
+def mass_properties(
+    triangles, crosses=None, density=None, center_mass=None, skip_inertia=False
+) -> MassProperties:
     """
     Calculate the mass properties of a group of triangles.
 
@@ -199,10 +227,12 @@ def mass_properties(triangles,
     """
     triangles = np.asanyarray(triangles, dtype=np.float64)
     if not util.is_shape(triangles, (-1, 3, 3)):
-        raise ValueError('Triangles must be (n, 3, 3)!')
+        raise ValueError("Triangles must be (n, 3, 3)!")
 
     if crosses is None:
         crosses = cross(triangles)
+    if density is None:
+        density = 1.0
 
     # these are the subexpressions of the integral
     # this is equvilant but 7x faster than triangles.sum(axis=1)
@@ -213,18 +243,22 @@ def mass_properties(triangles,
 
     # for the x coordinates of every triangle
     # triangles[:,:,0] will give rows like [[x0, x1, x2], ...]
-    f2 = (triangles[:, 0, :]**2 +
-          triangles[:, 1, :]**2 +
-          triangles[:, 0, :] * triangles[:, 1, :] +
-          triangles[:, 2, :] * f1)
-    f3 = ((triangles[:, 0, :]**3) +
-          (triangles[:, 0, :]**2) * (triangles[:, 1, :]) +
-          (triangles[:, 0, :]) * (triangles[:, 1, :]**2) +
-          (triangles[:, 1, :]**3) +
-          (triangles[:, 2, :] * f2))
-    g0 = (f2 + (triangles[:, 0, :] + f1) * triangles[:, 0, :])
-    g1 = (f2 + (triangles[:, 1, :] + f1) * triangles[:, 1, :])
-    g2 = (f2 + (triangles[:, 2, :] + f1) * triangles[:, 2, :])
+    f2 = (
+        triangles[:, 0, :] ** 2
+        + triangles[:, 1, :] ** 2
+        + triangles[:, 0, :] * triangles[:, 1, :]
+        + triangles[:, 2, :] * f1
+    )
+    f3 = (
+        (triangles[:, 0, :] ** 3)
+        + (triangles[:, 0, :] ** 2) * (triangles[:, 1, :])
+        + (triangles[:, 0, :]) * (triangles[:, 1, :] ** 2)
+        + (triangles[:, 1, :] ** 3)
+        + (triangles[:, 2, :] * f2)
+    )
+    g0 = f2 + (triangles[:, 0, :] + f1) * triangles[:, 0, :]
+    g1 = f2 + (triangles[:, 1, :] + f1) * triangles[:, 1, :]
+    g2 = f2 + (triangles[:, 2, :] + f1) * triangles[:, 2, :]
     integral = np.zeros((10, len(f1)))
     integral[0] = crosses[:, 0] * f1[:, 0]
     integral[1:4] = (crosses * f2).T
@@ -232,51 +266,53 @@ def mass_properties(triangles,
     for i in range(3):
         triangle_i = np.mod(i + 1, 3)
         integral[i + 7] = crosses[:, i] * (
-            (triangles[:, 0, triangle_i] * g0[:, i]) +
-            (triangles[:, 1, triangle_i] * g1[:, i]) +
-            (triangles[:, 2, triangle_i] * g2[:, i]))
+            (triangles[:, 0, triangle_i] * g0[:, i])
+            + (triangles[:, 1, triangle_i] * g1[:, i])
+            + (triangles[:, 2, triangle_i] * g2[:, i])
+        )
 
     coefficients = 1.0 / np.array(
-        [6, 24, 24, 24, 60, 60, 60, 120, 120, 120],
-        dtype=np.float64)
+        [6, 24, 24, 24, 60, 60, 60, 120, 120, 120], dtype=np.float64
+    )
     integrated = integral.sum(axis=1) * coefficients
 
     volume = integrated[0]
 
     if center_mass is None:
         if np.abs(volume) < tol.zero:
-            center_mass = np.zeros(3)
+            # if there is no volume set center of mass to the origin
+            center_mass = np.zeros(3, dtype=np.float64)
         else:
+            # otherwise get it from the integration
             center_mass = integrated[1:4] / volume
 
-    mass = density * volume
-
-    result = {'density': density,
-              'mass': mass,
-              'volume': volume,
-              'center_mass': center_mass}
+    result = MassProperties(
+        density=density,
+        mass=density * volume,
+        volume=volume,
+        center_mass=center_mass,
+    )
 
     if skip_inertia:
         return result
 
     inertia = np.zeros((3, 3))
-    inertia[0, 0] = integrated[5] + integrated[6] - \
-        (volume * (center_mass[[1, 2]]**2).sum())
-    inertia[1, 1] = integrated[4] + integrated[6] - \
-        (volume * (center_mass[[0, 2]]**2).sum())
-    inertia[2, 2] = integrated[4] + integrated[5] - \
-        (volume * (center_mass[[0, 1]]**2).sum())
-    inertia[0, 1] = - (
-        integrated[7] - (volume * np.prod(center_mass[[0, 1]])))
-    inertia[1, 2] = - (
-        integrated[8] - (volume * np.prod(center_mass[[1, 2]])))
-    inertia[0, 2] = - (
-        integrated[9] - (volume * np.prod(center_mass[[0, 2]])))
+    inertia[0, 0] = (
+        integrated[5] + integrated[6] - (volume * (center_mass[[1, 2]] ** 2).sum())
+    )
+    inertia[1, 1] = (
+        integrated[4] + integrated[6] - (volume * (center_mass[[0, 2]] ** 2).sum())
+    )
+    inertia[2, 2] = (
+        integrated[4] + integrated[5] - (volume * (center_mass[[0, 1]] ** 2).sum())
+    )
+    inertia[0, 1] = -(integrated[7] - (volume * np.prod(center_mass[[0, 1]])))
+    inertia[1, 2] = -(integrated[8] - (volume * np.prod(center_mass[[1, 2]])))
+    inertia[0, 2] = -(integrated[9] - (volume * np.prod(center_mass[[0, 2]])))
     inertia[2, 0] = inertia[0, 2]
     inertia[2, 1] = inertia[1, 2]
     inertia[1, 0] = inertia[0, 1]
-    inertia *= density
-    result['inertia'] = inertia
+    result.inertia = inertia * density
 
     return result
 
@@ -300,8 +336,7 @@ def windings_aligned(triangles, normals_compare):
     """
     triangles = np.asanyarray(triangles, dtype=np.float64)
     if not util.is_shape(triangles, (-1, 3, 3), allow_zeros=True):
-        raise ValueError(
-            'triangles must have shape (n, 3, 3), got %s' % str(triangles.shape))
+        raise ValueError(f"triangles must have shape (n, 3, 3), got {triangles.shape!s}")
     normals_compare = np.asanyarray(normals_compare, dtype=np.float64)
 
     calculated, valid = normals(triangles)
@@ -310,8 +345,7 @@ def windings_aligned(triangles, normals_compare):
         difference = np.dot(calculated, normals_compare)
     else:
         # multiple comparison case
-        difference = diagonal_dot(
-            calculated, normals_compare[valid])
+        difference = diagonal_dot(calculated, normals_compare[valid])
 
     aligned = np.zeros(len(triangles), dtype=bool)
     aligned[valid] = difference > 0.0
@@ -336,11 +370,10 @@ def bounds_tree(triangles):
     """
     triangles = np.asanyarray(triangles, dtype=np.float64)
     if not util.is_shape(triangles, (-1, 3, 3)):
-        raise ValueError('Triangles must be (n, 3, 3)!')
+        raise ValueError("Triangles must be (n, 3, 3)!")
 
     # the (n,6) interleaved bounding box for every triangle
-    triangle_bounds = np.column_stack((triangles.min(axis=1),
-                                       triangles.max(axis=1)))
+    triangle_bounds = np.column_stack((triangles.min(axis=1), triangles.max(axis=1)))
     tree = util.bounds_tree(triangle_bounds)
     return tree
 
@@ -369,15 +402,14 @@ def nondegenerate(triangles, areas=None, height=None):
     """
     triangles = np.asanyarray(triangles, dtype=np.float64)
     if not util.is_shape(triangles, (-1, 3, 3)):
-        raise ValueError('Triangles must be (n, 3, 3)!')
+        raise ValueError("Triangles must be (n, 3, 3)!")
 
     if height is None:
         height = tol.merge
 
     # if both edges of the triangles OBB are longer than tol.merge
     # we declare them to be nondegenerate
-    ok = (extents(triangles=triangles,
-                  areas=areas) > height).all(axis=1)
+    ok = (extents(triangles=triangles, areas=areas) > height).all(axis=1)
 
     return ok
 
@@ -400,19 +432,18 @@ def extents(triangles, areas=None):
     """
     triangles = np.asanyarray(triangles, dtype=np.float64)
     if not util.is_shape(triangles, (-1, 3, 3)):
-        raise ValueError('Triangles must be (n, 3, 3)!')
+        raise ValueError("Triangles must be (n, 3, 3)!")
 
     if areas is None:
-        areas = area(triangles=triangles,
-                     sum=False)
+        areas = area(triangles=triangles, sum=False)
 
     # the edge vectors which define the triangle
     a = triangles[:, 1] - triangles[:, 0]
     b = triangles[:, 2] - triangles[:, 0]
 
     # length of the edge vectors
-    length_a = (a**2).sum(axis=1)**.5
-    length_b = (b**2).sum(axis=1)**.5
+    length_a = (a**2).sum(axis=1) ** 0.5
+    length_b = (b**2).sum(axis=1) ** 0.5
 
     # which edges are acceptable length
     nonzero_a = length_a > tol.merge
@@ -445,29 +476,17 @@ def barycentric_to_points(triangles, barycentric):
     points : (m, 3) float
       Points in space
     """
-    barycentric = np.asanyarray(barycentric, dtype=np.float64)
+    barycentric = np.array(barycentric, dtype=np.float64)
     triangles = np.asanyarray(triangles, dtype=np.float64)
 
-    if not util.is_shape(triangles, (-1, 3, 3)):
-        raise ValueError('Triangles must be (n, 3, 3)!')
-    if barycentric.shape == (2,):
-        barycentric = np.ones((len(triangles), 2),
-                              dtype=np.float64) * barycentric
-    if util.is_shape(barycentric, (len(triangles), 2)):
-        barycentric = np.column_stack((barycentric,
-                                       1.0 - barycentric.sum(axis=1)))
-    elif not util.is_shape(barycentric, (len(triangles), 3)):
-        raise ValueError('Barycentric shape incorrect!')
-
+    # normalize in-place
     barycentric /= barycentric.sum(axis=1).reshape((-1, 1))
     points = (triangles * barycentric.reshape((-1, 3, 1))).sum(axis=1)
 
     return points
 
 
-def points_to_barycentric(triangles,
-                          points,
-                          method='cramer'):
+def points_to_barycentric(triangles, points, method="cramer"):
     """
     Find the barycentric coordinates of points relative to triangles.
 
@@ -480,9 +499,9 @@ def points_to_barycentric(triangles,
 
     Parameters
     -----------
-    triangles : (n, 3, 3) float
+    triangles : (n, 3, 2 | 3) float
       Triangles vertices in space
-    points : (n, 3) float
+    points : (n, 2 | 3) float
       Point in space associated with a triangle
     method :  str
       Which method to compute the barycentric coordinates with:
@@ -501,10 +520,8 @@ def points_to_barycentric(triangles,
         denominator = diagonal_dot(n, n)
 
         barycentric = np.zeros((len(triangles), 3), dtype=np.float64)
-        barycentric[:, 2] = diagonal_dot(
-            np.cross(edge_vectors[:, 0], w), n) / denominator
-        barycentric[:, 1] = diagonal_dot(
-            np.cross(w, edge_vectors[:, 1]), n) / denominator
+        barycentric[:, 2] = diagonal_dot(np.cross(edge_vectors[:, 0], w), n) / denominator
+        barycentric[:, 1] = diagonal_dot(np.cross(w, edge_vectors[:, 1]), n) / denominator
         barycentric[:, 0] = 1 - barycentric[:, 1] - barycentric[:, 2]
         return barycentric
 
@@ -518,25 +535,32 @@ def points_to_barycentric(triangles,
         inverse_denominator = 1.0 / (dot00 * dot11 - dot01 * dot01)
 
         barycentric = np.zeros((len(triangles), 3), dtype=np.float64)
-        barycentric[:, 2] = (dot00 * dot12 - dot01 *
-                             dot02) * inverse_denominator
-        barycentric[:, 1] = (dot11 * dot02 - dot01 *
-                             dot12) * inverse_denominator
+        barycentric[:, 2] = (dot00 * dot12 - dot01 * dot02) * inverse_denominator
+        barycentric[:, 1] = (dot11 * dot02 - dot01 * dot12) * inverse_denominator
         barycentric[:, 0] = 1 - barycentric[:, 1] - barycentric[:, 2]
         return barycentric
 
     # establish that input triangles and points are sane
     triangles = np.asanyarray(triangles, dtype=np.float64)
     points = np.asanyarray(points, dtype=np.float64)
-    if not util.is_shape(triangles, (-1, 3, 3)):
-        raise ValueError('triangles shape incorrect')
-    if not util.is_shape(points, (len(triangles), 3)):
-        raise ValueError('triangles and points must correspond')
+
+    # triangles should be (n, 3, dimension)
+    if len(triangles.shape) != 3:
+        raise ValueError("triangles shape incorrect")
+
+    # this should work for 2D and 3D triangles
+    dim = triangles.shape[2]
+    if (
+        len(points.shape) != 2
+        or points.shape[1] != dim
+        or points.shape[0] != triangles.shape[0]
+    ):
+        raise ValueError("triangles and points must correspond")
 
     edge_vectors = triangles[:, 1:] - triangles[:, :1]
-    w = points - triangles[:, 0].reshape((-1, 3))
+    w = points - triangles[:, 0].reshape((-1, dim))
 
-    if method == 'cross':
+    if method == "cross":
         return method_cross()
     return method_cramer()
 
@@ -568,9 +592,9 @@ def closest_point(triangles, points):
     triangles = np.asanyarray(triangles, dtype=np.float64)
     points = np.asanyarray(points, dtype=np.float64)
     if not util.is_shape(triangles, (-1, 3, 3)):
-        raise ValueError('triangles shape incorrect')
+        raise ValueError("triangles shape incorrect")
     if not util.is_shape(points, (len(triangles), 3)):
-        raise ValueError('need same number of triangles and points!')
+        raise ValueError("need same number of triangles and points!")
 
     # store the location of the closest point
     result = np.zeros_like(points)
@@ -615,9 +639,7 @@ def closest_point(triangles, points):
 
     # check if P in edge region of AB, if so return projection of P onto A
     vc = (d1 * d4) - (d3 * d2)
-    is_ab = ((vc < tol.zero) &
-             (d1 > -tol.zero) &
-             (d3 < tol.zero) & remain)
+    is_ab = (vc < tol.zero) & (d1 > -tol.zero) & (d3 < tol.zero) & remain
     if any(is_ab):
         v = (d1[is_ab] / (d1[is_ab] - d3[is_ab])).reshape((-1, 1))
         result[is_ab] = a[is_ab] + (v * ab[is_ab])
@@ -642,9 +664,7 @@ def closest_point(triangles, points):
 
     # check if P in edge region of BC, if so return projection of P onto BC
     va = (d3 * d6) - (d5 * d4)
-    is_bc = ((va < tol.zero) &
-             ((d4 - d3) > - tol.zero) &
-             ((d5 - d6) > -tol.zero) & remain)
+    is_bc = (va < tol.zero) & ((d4 - d3) > -tol.zero) & ((d5 - d6) > -tol.zero) & remain
     if any(is_bc):
         d43 = d4[is_bc] - d3[is_bc]
         w = (d43 / (d43 + (d5[is_bc] - d6[is_bc]))).reshape((-1, 1))
@@ -685,11 +705,10 @@ def to_kwargs(triangles):
     """
     triangles = np.asanyarray(triangles, dtype=np.float64)
     if not util.is_shape(triangles, (-1, 3, 3)):
-        raise ValueError('Triangles must be (n, 3, 3)!')
+        raise ValueError("Triangles must be (n, 3, 3)!")
 
     vertices = triangles.reshape((-1, 3))
     faces = np.arange(len(vertices)).reshape((-1, 3))
-    kwargs = {'vertices': vertices,
-              'faces': faces}
+    kwargs = {"vertices": vertices, "faces": faces}
 
     return kwargs

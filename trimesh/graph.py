@@ -8,20 +8,22 @@ edge list form, and abstract the backend graph library being used.
 Currently uses networkx or scipy.sparse.csgraph backend.
 """
 
-import numpy as np
 import collections
+import warnings
 
-from . import util
-from . import grouping
-from . import exceptions
+import numpy as np
 
+from . import exceptions, grouping, util
 from .constants import log, tol
 from .geometry import faces_to_edges
+from .typed import ArrayLike, List, NDArray, Number, Optional, Sequence, Union, int64
 
 try:
-    from scipy.sparse import csgraph, coo_matrix
+    from scipy.sparse import coo_matrix, csgraph
+    from scipy.spatial import cKDTree
 except BaseException as E:
     # re-raise exception when used
+    cKDTree = exceptions.ExceptionWrapper(E)
     csgraph = exceptions.ExceptionWrapper(E)
     coo_matrix = exceptions.ExceptionWrapper(E)
 
@@ -33,9 +35,7 @@ except BaseException as E:
     nx = exceptions.ExceptionWrapper(E)
 
 
-def face_adjacency(faces=None,
-                   mesh=None,
-                   return_edges=False):
+def face_adjacency(faces=None, mesh=None, return_edges=False):
     """
     Returns an (n, 2) list of face indices.
     Each pair of faces in the list shares an edge, making them adjacent.
@@ -91,7 +91,7 @@ def face_adjacency(faces=None,
     edge_groups = grouping.group_rows(edges, require_count=2)
 
     if len(edge_groups) == 0:
-        log.debug('No adjacent faces detected! Did you merge vertices?')
+        log.debug("No adjacent faces detected! Did you merge vertices?")
 
     # the pairs of all adjacent faces
     # so for every row in face_idx, self.faces[face_idx[*][0]] and
@@ -109,10 +109,11 @@ def face_adjacency(faces=None,
         adjacency_edges = edges[edge_groups[:, 0][nondegenerate]]
         assert len(adjacency_edges) == len(adjacency)
         return adjacency, adjacency_edges
+
     return adjacency
 
 
-def face_neighborhood(mesh):
+def face_neighborhood(mesh) -> NDArray[int64]:
     """
     Find faces that share a vertex i.e. 'neighbors' faces.
     Relies on the fact that an adjacency matrix at a power p
@@ -131,7 +132,9 @@ def face_neighborhood(mesh):
     TT.setdiag(0)
     TT.eliminate_zeros()
     TT = TT.tocoo()
-    neighborhood = np.concatenate((TT.row[:, None], TT.col[:, None]), axis=-1)
+    neighborhood = np.concatenate(
+        (TT.row[:, None], TT.col[:, None]), axis=-1, dtype=np.int64
+    )
     return neighborhood
 
 
@@ -155,8 +158,7 @@ def face_adjacency_unshared(mesh):
 
     # the non- shared vertex index is the same shape
     # as face_adjacency holding vertex indices vs face indices
-    vid_unshared = np.zeros_like(mesh.face_adjacency,
-                                 dtype=np.int64) - 1
+    vid_unshared = np.zeros_like(mesh.face_adjacency, dtype=np.int64) - 1
     # get the shared edges between adjacent faces
     edges = mesh.face_adjacency_edges
 
@@ -166,9 +168,12 @@ def face_adjacency_unshared(mesh):
         faces = mesh.faces[fid]
         # should have one True per row of (3,)
         # index of vertex not included in shared edge
-        unshared = np.logical_not(np.logical_or(
-            faces == edges[:, 0].reshape((-1, 1)),
-            faces == edges[:, 1].reshape((-1, 1))))
+        unshared = np.logical_not(
+            np.logical_or(
+                faces == edges[:, 0].reshape((-1, 1)),
+                faces == edges[:, 1].reshape((-1, 1)),
+            )
+        )
         # each row should have exactly one uncontained verted
         row_ok = unshared.sum(axis=1) == 1
         # any degenerate row should be ignored
@@ -201,27 +206,23 @@ def face_adjacency_radius(mesh):
     #       distance
     # R = ---------------
     #     2 * sin(theta)
-    nonzero = mesh.face_adjacency_angles > np.radians(.01)
-    denominator = np.abs(
-        2.0 * np.sin(mesh.face_adjacency_angles[nonzero]))
+    nonzero = mesh.face_adjacency_angles > np.radians(0.01)
+    denominator = np.abs(2.0 * np.sin(mesh.face_adjacency_angles[nonzero]))
 
     # consider the distance between the non- shared vertices of the
     # face adjacency pair as the key distance
     point_pairs = mesh.vertices[mesh.face_adjacency_unshared]
-    vectors = np.diff(point_pairs,
-                      axis=1).reshape((-1, 3))
+    vectors = np.diff(point_pairs, axis=1).reshape((-1, 3))
 
     # the vertex indices of the shared edge for the adjacency pairx
     edges = mesh.face_adjacency_edges
     # unit vector along shared the edge
-    edges_vec = util.unitize(np.diff(mesh.vertices[edges],
-                                     axis=1).reshape((-1, 3)))
+    edges_vec = util.unitize(np.diff(mesh.vertices[edges], axis=1).reshape((-1, 3)))
 
     # the vector of the perpendicular projection to the shared edge
     perp = np.subtract(
-        vectors, (util.diagonal_dot(
-            vectors, edges_vec).reshape(
-            (-1, 1)) * edges_vec))
+        vectors, (util.diagonal_dot(vectors, edges_vec).reshape((-1, 1)) * edges_vec)
+    )
     # the length of the perpendicular projection
     span = util.row_norm(perp)
 
@@ -278,21 +279,22 @@ def shared_edges(faces_a, faces_b):
     """
     e_a = np.sort(faces_to_edges(faces_a), axis=1)
     e_b = np.sort(faces_to_edges(faces_b), axis=1)
-    shared = grouping.boolean_rows(
-        e_a, e_b, operation=np.intersect1d)
+    shared = grouping.boolean_rows(e_a, e_b, operation=np.intersect1d)
     return shared
 
 
-def facets(mesh, engine=None):
+def facets(mesh, engine=None, facet_threshold: Optional[Number] = None):
     """
     Find the list of parallel adjacent faces.
 
     Parameters
     -----------
-    mesh :  trimesh.Trimesh
+    mesh : trimesh.Trimesh
     engine : str
-       Which graph engine to use:
-       ('scipy', 'networkx')
+      Which graph engine to use:
+      ('scipy', 'networkx')
+    facet_threshold : float
+      Threshold for two facets to be considered coplanar
 
     Returns
     ---------
@@ -300,6 +302,8 @@ def facets(mesh, engine=None):
         Groups of face indexes of
         parallel adjacent faces.
     """
+    if facet_threshold is None:
+        facet_threshold = tol.facet_threshold
     # what is the radius of a circle that passes through the perpendicular
     # projection of the vector between the two non- shared vertices
     # onto the shared edge, with the face normal from the two adjacent faces
@@ -316,20 +320,20 @@ def facets(mesh, engine=None):
     # if span is zero we know faces are small/parallel
     nonzero = np.abs(span) > tol.zero
     # faces with a radii/span ratio larger than a threshold pass
-    parallel[nonzero] = (radii[nonzero] /
-                         span[nonzero]) ** 2 > tol.facet_threshold
+    parallel[nonzero] = (radii[nonzero] / span[nonzero]) ** 2 > facet_threshold
 
     # run connected components on the parallel faces to group them
     components = connected_components(
         mesh.face_adjacency[parallel],
         nodes=np.arange(len(mesh.faces)),
         min_len=2,
-        engine=engine)
+        engine=engine,
+    )
 
     return components
 
 
-def split(mesh, only_watertight=True, adjacency=None, engine=None, **kwargs):
+def split(mesh, only_watertight=True, adjacency=None, engine=None, **kwargs) -> List:
     """
     Split a mesh into multiple meshes from face
     connectivity.
@@ -363,19 +367,13 @@ def split(mesh, only_watertight=True, adjacency=None, engine=None, **kwargs):
         min_len = 1
 
     components = connected_components(
-        edges=adjacency,
-        nodes=np.arange(len(mesh.faces)),
-        min_len=min_len,
-        engine=engine)
-    meshes = mesh.submesh(
-        components, only_watertight=only_watertight, **kwargs)
+        edges=adjacency, nodes=np.arange(len(mesh.faces)), min_len=min_len, engine=engine
+    )
+    meshes = mesh.submesh(components, only_watertight=only_watertight, **kwargs)
     return meshes
 
 
-def connected_components(edges,
-                         min_len=1,
-                         nodes=None,
-                         engine=None):
+def connected_components(edges, min_len=1, nodes=None, engine=None):
     """
     Find groups of connected nodes from an edge list.
 
@@ -397,6 +395,7 @@ def connected_components(edges,
     components : (n,) sequence of (*,) int
       Nodes which are connected
     """
+
     def components_networkx():
         """
         Find connected components using networkx
@@ -413,8 +412,7 @@ def connected_components(edges,
         Find connected components using scipy.sparse.csgraph
         """
         # label each node
-        labels = connected_component_labels(edges,
-                                            node_count=node_count)
+        labels = connected_component_labels(edges, node_count=node_count)
 
         # we have to remove results that contain nodes outside
         # of the specified node set and reindex
@@ -442,7 +440,7 @@ def connected_components(edges,
             return []
 
     if not util.is_shape(edges, (-1, 2)):
-        raise ValueError('edges must be (n, 2)!')
+        raise ValueError("edges must be (n, 2)!")
 
     # find the maximum index referenced in either nodes or edges
     counts = [0]
@@ -459,9 +457,9 @@ def connected_components(edges,
     edges = edges[edges_ok]
 
     # networkx is pure python and is usually 5-10x slower than scipy
-    engines = collections.OrderedDict((
-        ('scipy', components_csgraph),
-        ('networkx', components_networkx)))
+    engines = collections.OrderedDict(
+        (("scipy", components_csgraph), ("networkx", components_networkx))
+    )
 
     # if a graph engine has explicitly been requested use it
     if engine in engines:
@@ -475,7 +473,7 @@ def connected_components(edges,
         # will be raised if the library didn't import correctly above
         except BaseException:
             continue
-    raise ImportError('no graph engines available!')
+    raise ImportError("no graph engines available!")
 
 
 def connected_component_labels(edges, node_count=None):
@@ -495,8 +493,7 @@ def connected_component_labels(edges, node_count=None):
         Component labels for each node
     """
     matrix = edges_to_coo(edges, node_count)
-    body_count, labels = csgraph.connected_components(
-        matrix, directed=False)
+    _body_count, labels = csgraph.connected_components(matrix, directed=False)
 
     if node_count is not None:
         assert len(labels) == node_count
@@ -504,79 +501,70 @@ def connected_component_labels(edges, node_count=None):
     return labels
 
 
-def split_traversal(traversal,
-                    edges,
-                    edges_hash=None):
+def _split_traversal(traversal: NDArray, edges_tree) -> List[NDArray]:
     """
-    Given a traversal as a list of nodes, split the traversal
+    Given a traversal as a list of nodes split the traversal
     if a sequential index pair is not in the given edges.
+    Useful since the implementation of DFS we're using will
+    happily return disconnected values in a flat traversal.
 
     Parameters
     --------------
-    edges : (n, 2) int
-       Graph edge indexes
     traversal : (m,) int
        Traversal through edges
-    edge_hash : (n,)
-       Edges sorted on axis=1 and
-       passed to grouping.hashable_rows
+    edges_tree : cKDTree
+      A way to reconstruct original edge indices from
+      sorted (n, 2) edge values. This is a slight misuse of a
+      kdtree since one could just hash the tuples of the integer
+      edges, but that isn't possible with numpy arrays easily
+      and this allows a vectorized reconstruction.
 
     Returns
     ---------------
     split : sequence of (p,) int
+      Traversals split into only connected paths.
     """
-    traversal = np.asanyarray(traversal,
-                              dtype=np.int64)
-
-    # hash edge rows for contains checks
-    if edges_hash is None:
-        edges_hash = grouping.hashable_rows(
-            np.sort(edges, axis=1))
-
     # turn the (n,) traversal into (n-1, 2) edges
-    trav_edge = np.column_stack((traversal[:-1],
-                                 traversal[1:]))
-    # hash each edge so we can compare to edge set
-    trav_hash = grouping.hashable_rows(
-        np.sort(trav_edge, axis=1))
-    # check if each edge is contained in edge set
-    contained = np.in1d(trav_hash, edges_hash)
+    # save the original order of the edges for reconstruction
+    trav_edge = np.column_stack((traversal[:-1], traversal[1:]))
 
-    # exit early if every edge of traversal exists
-    if contained.all():
-        # just reshape one traversal
+    # check to see if the traversal edges exists in the original edges
+    # the tree is holding the sorted edges so query after sorting
+    exists = edges_tree.query(np.sort(trav_edge, axis=1))[0] < 1e-10
+
+    if exists.all():
         split = [traversal]
     else:
-        # find contiguous groups of contained edges
-        blocks = grouping.blocks(contained,
-                                 min_len=1,
-                                 only_nonzero=True)
+        # contiguous groups of edges
+        blocks = grouping.blocks(exists, min_len=1, only_nonzero=True)
+        split = [
+            np.concatenate([trav_edge[:, 0][b], trav_edge[b[-1]][1:]]) for b in blocks
+        ]
 
-        # turn edges back in to sequence of traversals
-        split = [np.append(trav_edge[b][:, 0],
-                           trav_edge[b[-1]][1])
-                 for b in blocks]
+    # a traversal may be effectively closed so check
+    # to see if we need to add on the first index to the end
+    needs_close = np.array(
+        [
+            len(s) > 2
+            and s[0] != s[-1]
+            and edges_tree.query(sorted([s[0], s[-1]]))[0] < 1e-10
+            for s in split
+        ]
+    )
 
-    # close traversals if necessary
-    for i, t in enumerate(split):
-        # make sure elements of sequence are numpy arrays
-        split[i] = np.asanyarray(split[i], dtype=np.int64)
-        # don't close if its a single edge
-        if len(t) <= 2:
-            continue
-        # make sure it's not already closed
-        edge = np.sort([t[0], t[-1]])
-        if edge.ptp() == 0:
-            continue
-        close = grouping.hashable_rows(edge.reshape((1, 2)))[0]
-        # if we need the edge add it
-        if close in edges_hash:
-            split[i] = np.append(t, t[0]).astype(np.int64)
+    if needs_close.any():
+        for i in np.nonzero(needs_close)[0]:
+            split[i] = np.concatenate([split[i], split[i][:1]])
+
+    if tol.strict:
+        for s in split:
+            check_edge = np.sort(np.column_stack((s[:-1], s[1:])), axis=1)
+            assert (edges_tree.query(check_edge)[0] < 1e-10).all()
 
     return split
 
 
-def fill_traversals(traversals, edges, edges_hash=None):
+def fill_traversals(traversals: Sequence, edges: ArrayLike) -> Union[Sequence, NDArray]:
     """
     Convert a traversal of a list of edges into a sequence of
     traversals where every pair of consecutive node indexes
@@ -588,9 +576,6 @@ def fill_traversals(traversals, edges, edges_hash=None):
        Node indexes of traversals of a graph
     edges : (n, 2) int
        Pairs of connected node indexes
-    edges_hash : None, or (n,) int
-       Edges sorted along axis 1 then hashed
-       using grouping.hashable_rows
 
     Returns
     --------------
@@ -598,38 +583,26 @@ def fill_traversals(traversals, edges, edges_hash=None):
        Node indexes of connected traversals
     """
     # make sure edges are correct type
-    edges = np.asanyarray(edges, dtype=np.int64)
-    # make sure edges are sorted
-    edges.sort(axis=1)
+    edges = np.sort(edges, axis=1)
+    edges_tree = cKDTree(edges)
 
     # if there are no traversals just return edges
     if len(traversals) == 0:
         return edges.copy()
 
-    # hash edges for contains checks
-    if edges_hash is None:
-        edges_hash = grouping.hashable_rows(edges)
-
     splits = []
     for nodes in traversals:
-        # split traversals to remove edges
-        # that don't actually exist
-        splits.extend(split_traversal(
-            traversal=nodes,
-            edges=edges,
-            edges_hash=edges_hash))
+        # split traversals to remove edges that don't actually exist
+        splits.extend(_split_traversal(traversal=nodes, edges_tree=edges_tree))
+
     # turn the split traversals back into (n, 2) edges
-    included = util.vstack_empty([np.column_stack((i[:-1], i[1:]))
-                                  for i in splits])
+    included = util.vstack_empty([np.column_stack((i[:-1], i[1:])) for i in splits])
     if len(included) > 0:
         # sort included edges in place
         included.sort(axis=1)
         # make sure any edges not included in split traversals
         # are just added as a length 2 traversal
-        splits.extend(grouping.boolean_rows(
-            edges,
-            included,
-            operation=np.setdiff1d))
+        splits.extend(grouping.boolean_rows(edges, included, operation=np.setdiff1d))
     else:
         # no edges were included, so our filled traversal
         # is just the original edges copied over
@@ -638,7 +611,7 @@ def fill_traversals(traversals, edges, edges_hash=None):
     return splits
 
 
-def traversals(edges, mode='bfs'):
+def traversals(edges, mode="bfs"):
     """
     Given an edge list generate a sequence of ordered depth
     first search traversals using scipy.csgraph routines.
@@ -659,16 +632,16 @@ def traversals(edges, mode='bfs'):
     if len(edges) == 0:
         return []
     elif not util.is_shape(edges, (-1, 2)):
-        raise ValueError('edges are not (n, 2)!')
+        raise ValueError("edges are not (n, 2)!")
 
     # pick the traversal method
     mode = str(mode).lower().strip()
-    if mode == 'bfs':
+    if mode == "bfs":
         func = csgraph.breadth_first_order
-    elif mode == 'dfs':
+    elif mode == "dfs":
         func = csgraph.depth_first_order
     else:
-        raise ValueError('traversal mode must be either dfs or bfs')
+        raise ValueError("traversal mode must be either dfs or bfs")
 
     # make sure edges are sorted so we can query
     # an ordered pair later
@@ -685,10 +658,9 @@ def traversals(edges, mode='bfs'):
         # starting at any node
         start = nodes.pop()
         # get an (n,) ordered traversal
-        ordered = func(graph,
-                       i_start=start,
-                       return_predecessors=False,
-                       directed=False).astype(np.int64)
+        ordered = func(
+            graph, i_start=start, return_predecessors=False, directed=False
+        ).astype(np.int64)
 
         traversals.append(ordered)
         # remove the nodes we've consumed
@@ -719,9 +691,8 @@ def edges_to_coo(edges, count=None, data=None):
       Sparse COO
     """
     edges = np.asanyarray(edges, dtype=np.int64)
-    if not (len(edges) == 0 or
-            util.is_shape(edges, (-1, 2))):
-        raise ValueError('edges must be (n, 2)!')
+    if not (len(edges) == 0 or util.is_shape(edges, (-1, 2))):
+        raise ValueError("edges must be (n, 2)!")
 
     # if count isn't specified just set it to largest
     # value referenced in edges
@@ -734,9 +705,7 @@ def edges_to_coo(edges, count=None, data=None):
     if data is None:
         data = np.ones(len(edges), dtype=bool)
 
-    matrix = coo_matrix((data, edges.T),
-                        dtype=data.dtype,
-                        shape=(count, count))
+    matrix = coo_matrix((data, edges.T), dtype=data.dtype, shape=(count, count))
     return matrix
 
 
@@ -760,12 +729,12 @@ def neighbors(edges, max_index=None, directed=False):
     """
     neighbors = collections.defaultdict(set)
     if directed:
-        [neighbors[edge[0]].add(edge[1])
-         for edge in edges]
+        [neighbors[edge[0]].add(edge[1]) for edge in edges]
     else:
-        [(neighbors[edge[0]].add(edge[1]),
-          neighbors[edge[1]].add(edge[0]))
-         for edge in edges]
+        [
+            (neighbors[edge[0]].add(edge[1]), neighbors[edge[1]].add(edge[0]))
+            for edge in edges
+        ]
 
     if max_index is None:
         max_index = edges.max() + 1
@@ -774,9 +743,24 @@ def neighbors(edges, max_index=None, directed=False):
     return array
 
 
-def smoothed(mesh, angle=None, facet_minarea=10):
+def smoothed(*args, **kwargs):
     """
-    Return a non- watertight version of the mesh which
+    DEPRECATED: use `trimesh.graph.smooth_shade(mesh, ...)`
+    """
+    warnings.warn(
+        "`trimesh.graph.smoothed` is deprecated and will be removed in March 2024: "
+        + "use `trimesh.graph.smooth_shade(mesh, ...)`",
+        category=DeprecationWarning,
+        stacklevel=2,
+    )
+    return smooth_shade(*args, **kwargs)
+
+
+def smooth_shade(
+    mesh, angle: Optional[Number] = None, facet_minarea: Optional[Number] = 10.0
+):
+    """
+    Return a non-watertight version of the mesh which
     will render nicely with smooth shading by
     disconnecting faces at sharp angles to each other.
 
@@ -819,26 +803,20 @@ def smoothed(mesh, angle=None, facet_minarea=10):
         try:
             # we can survive not knowing facets
             # exclude facets with few faces
-            facets = [f for f in mesh.facets
-                      if areas[f].sum() > min_area]
+            facets = [f for f in mesh.facets if areas[f].sum() > min_area]
             if len(facets) > 0:
                 # mask for removing adjacency pairs where
                 # one of the faces is contained in a facet
-                mask = np.ones(len(mesh.faces),
-                               dtype=bool)
+                mask = np.ones(len(mesh.faces), dtype=bool)
                 mask[np.hstack(facets)] = False
                 # apply the mask to adjacency
                 adjacency = adjacency[mask[adjacency].all(axis=1)]
                 # nodes are no longer every faces
                 nodes = np.unique(adjacency)
         except BaseException:
-            log.warning('failed to calculate facets',
-                        exc_info=True)
+            log.warning("failed to calculate facets", exc_info=True)
     # run connected components on facet adjacency
-    components = connected_components(
-        adjacency,
-        min_len=2,
-        nodes=nodes)
+    components = connected_components(adjacency, min_len=2, nodes=nodes)
 
     # add back coplanar groups if any exist
     if len(facets) > 0:
@@ -854,19 +832,16 @@ def smoothed(mesh, angle=None, facet_minarea=10):
     if len(unique) != len(mesh.faces):
         # things like single loose faces
         # or groups below facet_minlen
-        broke = np.setdiff1d(
-            np.arange(len(mesh.faces)), unique)
+        broke = np.setdiff1d(np.arange(len(mesh.faces)), unique)
         components.extend(broke.reshape((-1, 1)))
 
     # get a submesh as a single appended Trimesh
-    smooth = mesh.submesh(components,
-                          only_watertight=False,
-                          append=True)
+    smooth = mesh.submesh(components, only_watertight=False, append=True)
     # store face indices from original mesh
-    smooth.metadata['original_components'] = components
+    smooth.metadata["original_components"] = components
     # smoothed should have exactly the same number of faces
     if len(smooth.faces) != len(mesh.faces):
-        log.warning('face count in smooth wrong!')
+        log.warning("face count in smooth wrong!")
     return smooth
 
 
@@ -892,8 +867,7 @@ def is_watertight(edges, edges_sorted=None):
         edges_sorted = np.sort(edges, axis=1)
 
     # group sorted edges
-    groups = grouping.group_rows(
-        edges_sorted, require_count=2)
+    groups = grouping.group_rows(edges_sorted, require_count=2)
     watertight = bool((len(groups) * 2) == len(edges))
 
     # are opposing edges reversed
@@ -918,11 +892,12 @@ def graph_to_svg(graph):
     svg: string, pictoral layout in SVG format
     """
 
-    import tempfile
     import subprocess
+    import tempfile
+
     with tempfile.NamedTemporaryFile() as dot_file:
         nx.drawing.nx_agraph.write_dot(graph, dot_file.name)
-        svg = subprocess.check_output(['dot', dot_file.name, '-Tsvg'])
+        svg = subprocess.check_output(["dot", dot_file.name, "-Tsvg"])
     return svg
 
 

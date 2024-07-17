@@ -2,31 +2,54 @@
 boolean.py
 -------------
 
-Do boolean operations on meshes using either Blender or OpenSCAD.
+Do boolean operations on meshes using either Blender or Manifold.
 """
-from . import interfaces
+
+import numpy as np
+
+from . import exceptions, interfaces
+from .typed import Callable, Iterable, Optional
+
+try:
+    from manifold3d import Manifold, Mesh
+except BaseException as E:
+    Mesh = exceptions.ExceptionWrapper(E)
+    Manifold = exceptions.ExceptionWrapper(E)
 
 
-def difference(meshes, engine=None, **kwargs):
+def difference(
+    meshes: Iterable, engine: Optional[str] = None, check_volume: bool = True, **kwargs
+):
     """
     Compute the boolean difference between a mesh an n other meshes.
 
     Parameters
     ----------
-    meshes : list of trimesh.Trimesh
-      Meshes to be processed
-    engine : str
-      Which backend to use, i.e. 'blender' or 'scad'
+    meshes : sequence of trimesh.Trimesh
+      Meshes to be processed.
+    engine
+      Which backend to use, i.e. 'blender' or 'manifold'
+    check_volume
+      Raise an error if not all meshes are watertight
+      positive volumes. Advanced users may want to ignore
+      this check as it is expensive.
+    kwargs
+      Passed through to the `engine`.
 
     Returns
     ----------
-    difference : a - (other meshes), **kwargs for a Trimesh
+    difference
+      A `Trimesh` that contains `meshes[0] - meshes[1:]`
     """
-    result = _engines[engine](meshes, operation='difference', **kwargs)
-    return result
+    if check_volume and not all(m.is_volume for m in meshes):
+        raise ValueError("Not all meshes are volumes!")
+
+    return _engines[engine](meshes, operation="difference", **kwargs)
 
 
-def union(meshes, engine=None, **kwargs):
+def union(
+    meshes: Iterable, engine: Optional[str] = None, check_volume: bool = True, **kwargs
+):
     """
     Compute the boolean union between a mesh an n other meshes.
 
@@ -35,63 +58,171 @@ def union(meshes, engine=None, **kwargs):
     meshes : list of trimesh.Trimesh
       Meshes to be processed
     engine : str
-      Which backend to use, i.e. 'blender' or 'scad'
+      Which backend to use, i.e. 'blender' or 'manifold'
+    check_volume
+      Raise an error if not all meshes are watertight
+      positive volumes. Advanced users may want to ignore
+      this check as it is expensive.
+    kwargs
+      Passed through to the `engine`.
 
     Returns
     ----------
-    union : a + (other meshes), **kwargs for a Trimesh
+    union
+      A `Trimesh` that contains the union of all passed meshes.
     """
-    result = _engines[engine](meshes, operation='union', **kwargs)
+    if check_volume and not all(m.is_volume for m in meshes):
+        raise ValueError("Not all meshes are volumes!")
+
+    result = _engines[engine](meshes, operation="union", **kwargs)
     return result
 
 
-def intersection(meshes, engine=None, **kwargs):
+def intersection(
+    meshes: Iterable, engine: Optional[str] = None, check_volume: bool = True, **kwargs
+):
     """
-    Compute the boolean intersection between a mesh an n other meshes.
+    Compute the boolean intersection between a mesh and other meshes.
 
     Parameters
     ----------
     meshes : list of trimesh.Trimesh
       Meshes to be processed
     engine : str
-      Which backend to use, i.e. 'blender' or 'scad'
+      Which backend to use, i.e. 'blender' or 'manifold'
+    check_volume
+      Raise an error if not all meshes are watertight
+      positive volumes. Advanced users may want to ignore
+      this check as it is expensive.
+    kwargs
+      Passed through to the `engine`.
 
     Returns
     ----------
-    intersection : **kwargs for a Trimesh object of the
-                    volume that is contained by all meshes
+    intersection
+      A `Trimesh` that contains the intersection geometry.
     """
-    result = _engines[engine](meshes, operation='intersection', **kwargs)
-    return result
+    if check_volume and not all(m.is_volume for m in meshes):
+        raise ValueError("Not all meshes are volumes!")
+    return _engines[engine](meshes, operation="intersection", **kwargs)
 
 
-def boolean_automatic(meshes, operation, **kwargs):
+def boolean_manifold(
+    meshes: Iterable,
+    operation: str,
+    check_volume: bool = True,
+    **kwargs,
+):
     """
-    Automatically pick an engine for booleans based on availability.
+    Run an operation on a set of meshes using the Manifold engine.
 
     Parameters
-    --------------
-    meshes : list of Trimesh
-      Meshes to be booleaned
-    operation : str
-      Type of boolean, i.e. 'union', 'intersection', 'difference'
-
-    Returns
-    ---------------
-    result : trimesh.Trimesh
-      Result of boolean operation
+    ----------
+    meshes : list of trimesh.Trimesh
+      Meshes to be processed
+    operation
+      Which boolean operation to do.
+    check_volume
+      Raise an error if not all meshes are watertight
+      positive volumes. Advanced users may want to ignore
+      this check as it is expensive.
+    kwargs
+      Passed through to the `engine`.
     """
-    if interfaces.blender.exists:
-        result = interfaces.blender.boolean(meshes, operation, **kwargs)
-    elif interfaces.scad.exists:
-        result = interfaces.scad.boolean(meshes, operation, **kwargs)
+    if check_volume and not all(m.is_volume for m in meshes):
+        raise ValueError("Not all meshes are volumes!")
+
+    # Convert to manifold meshes
+    manifolds = [
+        Manifold(
+            mesh=Mesh(
+                vert_properties=np.array(mesh.vertices, dtype=np.float32),
+                tri_verts=np.array(mesh.faces, dtype=np.uint32),
+            )
+        )
+        for mesh in meshes
+    ]
+
+    # Perform operations
+    if operation == "difference":
+        if len(meshes) != 2:
+            raise ValueError("Difference only defined over two meshes.")
+
+        result_manifold = manifolds[0] - manifolds[1]
+    elif operation == "union":
+        result_manifold = reduce_cascade(lambda a, b: a + b, manifolds)
+    elif operation == "intersection":
+        result_manifold = reduce_cascade(lambda a, b: a ^ b, manifolds)
     else:
-        raise ValueError('No backends available for boolean operations!')
-    return result
+        raise ValueError(f"Invalid boolean operation: '{operation}'")
+
+    # Convert back to trimesh meshes
+    from . import Trimesh
+
+    result_mesh = result_manifold.to_mesh()
+    out_mesh = Trimesh(vertices=result_mesh.vert_properties, faces=result_mesh.tri_verts)
+
+    return out_mesh
+
+
+def reduce_cascade(operation: Callable, items: Iterable):
+    """
+    Call a function in a cascaded pairwise way against a
+    flat sequence of items. This should produce the same
+    result as `functools.reduce` but may be faster for some
+    functions that for example perform only as fast as their
+    largest input.
+
+    For example on `a b c d e f g` this function would run and return:
+        a b
+        c d
+        e f
+        ab cd
+        ef g
+        abcd efg
+     -> abcdefg
+
+    Where `functools.reduce` would run and return:
+        a b
+        ab c
+        abc d
+        abcd e
+        abcde f
+        abcdef g
+     -> abcdefg
+
+    Parameters
+    ----------
+    operation
+      The function to call on pairs of items.
+    items
+      The flat list of items to apply operation against.
+    """
+    if len(items) == 0:
+        return None
+    elif len(items) == 2:
+        # might as well skip the loop overhead
+        return operation(items[0], items[1])
+
+    for _ in range(int(1 + np.log2(len(items)))):
+        results = []
+        for i in np.arange(len(items) // 2) * 2:
+            results.append(operation(items[i], items[i + 1]))
+
+        if len(items) % 2:
+            results.append(items[-1])
+
+        items = results
+
+    # logic should have reduced to a single item
+    assert len(results) == 1
+
+    return results[0]
 
 
 # which backend boolean engines
-_engines = {None: boolean_automatic,
-            'auto': boolean_automatic,
-            'scad': interfaces.scad.boolean,
-            'blender': interfaces.blender.boolean}
+_engines = {
+    None: boolean_manifold,
+    "manifold": boolean_manifold,
+    "blender": interfaces.blender.boolean,
+}
